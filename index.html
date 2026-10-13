@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#121315">
+</head>
+<body>
+<title>Filtrecam</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">
+<style>
+/* Layout: viseur plein cadre en haut, bande instrument (histogramme + réglage) puis rangée de filtres, comme un moniteur de terrain. Thème sombre unique, choisi pour un viseur. */
+:root{
+  --bg:#121315; --panel:#1b1d20; --line:#2c2f34; --fg:#e7e4dc; --mute:#8e8a80;
+  --amber:#f2a33a; --amber-dim:#7a5521; --warn:#ff5a4e;
+  --ui:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--ui);margin:0}
+.app{height:100%;display:flex;flex-direction:column;gap:10px;padding-inline:16px;padding-block:12px;box-sizing:border-box;max-width:760px;margin:0 auto}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+h1{font-size:1.15rem;font-weight:600;letter-spacing:.02em;margin:0}
+h1 span{color:var(--amber)}
+.status{font-family:var(--mono);font-size:.72rem;color:var(--mute);text-transform:uppercase;letter-spacing:.08em;display:flex;align-items:center;gap:6px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--mute)}
+.dot.live{background:var(--warn);animation:blink 1.2s infinite}
+@keyframes blink{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.dot.live{animation:none}}
+.viewer{position:relative;flex:1 1 auto;min-height:200px;background:#000;border:1px solid var(--line);border-radius:4px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+#view{max-width:100%;max-height:100%;display:block;image-rendering:auto}
+.osd{position:absolute;left:8px;top:8px;font-family:var(--mono);font-size:.7rem;color:var(--amber);background:rgba(0,0,0,.55);padding:3px 6px;border-radius:2px;pointer-events:none}
+.osd.r{left:auto;right:8px}
+.instr{display:grid;grid-template-columns:1fr;gap:8px}
+.hist{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px;display:flex;flex-direction:column;gap:4px}
+#hist{width:100%;height:56px;display:block}
+.hrow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:.68rem;color:var(--mute);font-variant-numeric:tabular-nums}
+.param{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px 10px}
+.param label{font-size:.8rem;color:var(--mute);white-space:nowrap;min-width:84px}
+.param input{flex:1;accent-color:var(--amber);min-width:0}
+.param output{font-family:var(--mono);font-size:.8rem;min-width:3ch;text-align:right;font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
+.chip{flex:0 0 auto;font-family:var(--ui);font-size:.85rem;font-weight:500;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:8px 12px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--amber);color:#1a1205;border-color:var(--amber)}
+.actions{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.btn{font-family:var(--ui);font-size:.82rem;font-weight:600;color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:3px;padding:10px 4px;cursor:pointer;text-align:center;display:flex;align-items:center;justify-content:center}
+.btn.primary{border-color:var(--amber);color:var(--amber)}
+.btn[aria-pressed="true"]{background:var(--amber-dim);border-color:var(--amber)}
+.btn:disabled{opacity:.4;cursor:default}
+button:focus-visible,label.btn:focus-within,input:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.note{font-size:.78rem;color:var(--mute);margin:0;min-height:1.2em}
+.note.err{color:var(--warn)}
+input[type=file]{position:absolute;width:1px;height:1px;opacity:0}
+</style>
+
+<div class="app">
+  <header>
+    <h1>Filtre<span>cam</span></h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="srcLabel">Mire de test</span></div>
+  </header>
+
+  <div class="viewer">
+    <canvas id="view"></canvas>
+    <div class="osd" id="osdF">SOBEL</div>
+    <div class="osd r" id="osdR">640×480</div>
+  </div>
+
+  <div class="instr">
+    <div class="hist">
+      <canvas id="hist" width="512" height="112"></canvas>
+      <div class="hrow"><span id="hStats">μ — · σ —</span><span id="hOtsu">Otsu —</span></div>
+    </div>
+    <div class="param" id="paramBox">
+      <label for="param" id="paramLabel">Gain</label>
+      <input type="range" id="param" min="0" max="255" value="128">
+      <output id="paramOut">128</output>
+    </div>
+  </div>
+
+  <div class="chips" id="chips" role="group" aria-label="Filtres"></div>
+
+  <div class="actions">
+    <button class="btn primary" id="liveBtn" aria-pressed="false">Direct</button>
+    <label class="btn" for="shot">Photo<input type="file" id="shot" accept="image/*" capture="environment"></label>
+    <label class="btn" for="pick">Galerie<input type="file" id="pick" accept="image/*"></label>
+    <button class="btn" id="splitBtn" aria-pressed="false">Avant/après</button>
+  </div>
+  <div class="actions" style="grid-template-columns:1fr 1fr">
+    <button class="btn" id="freezeBtn" aria-pressed="false" disabled>Figer</button>
+    <button class="btn" id="saveBtn" hidden>Enregistrer PNG</button>
+  </div>
+  <p class="note" id="note">Exemple chargé : une mire de test. Lance le direct ou prends une photo.</p>
+</div>
+
+<video id="vid" playsinline muted hidden></video>
+
+<script>
+const MAXW = 640;
+const view = document.getElementById('view'), vctx = view.getContext('2d', {willReadFrequently:true});
+const src = document.createElement('canvas'), sctx = src.getContext('2d', {willReadFrequently:true});
+const hist = document.getElementById('hist'), hctx = hist.getContext('2d');
+const vid = document.getElementById('vid');
+const $ = id => document.getElementById(id);
+
+const FILTERS = [
+  {id:'orig', name:'Original'},
+  {id:'gray', name:'Gris'},
+  {id:'eq', name:'Égalisation'},
+  {id:'sobel', name:'Sobel', p:{label:'Gain', min:1, max:8, def:2, step:.1}},
+  {id:'lap', name:'Laplacien', p:{label:'Gain', min:1, max:12, def:4, step:.1}},
+  {id:'thr', name:'Seuillage', p:{label:'Seuil', min:0, max:255, def:-1}},
+  {id:'false', name:'Fausses couleurs'},
+  {id:'peak', name:'Focus peaking', p:{label:'Sensibilité', min:20, max:250, def:90}},
+  {id:'zebra', name:'Zébras', p:{label:'Seuil IRE', min:50, max:100, def:95}},
+  {id:'inv', name:'Inversion'},
+];
+let cur = FILTERS[3], params = {}, split = false, live = false, frozen = false, stream = null, frame = 0, otsu = 128;
+let gray = null, hbins = new Uint32Array(256);
+
+// ---------- UI ----------
+const chips = $('chips');
+FILTERS.forEach(f => {
+  const b = document.createElement('button');
+  b.className = 'chip'; b.textContent = f.name; b.dataset.id = f.id;
+  b.setAttribute('aria-pressed', f === cur);
+  b.onclick = () => { cur = f; chips.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', c.dataset.id === f.id)); syncParam(); render(); };
+  chips.appendChild(b);
+});
+function syncParam(){
+  $('osdF').textContent = cur.name.toUpperCase();
+  const box = $('paramBox'), r = $('param');
+  if(!cur.p){ box.hidden = true; return; }
+  box.hidden = false;
+  $('paramLabel').textContent = cur.p.label;
+  r.min = cur.p.min; r.max = cur.p.max; r.step = cur.p.step || 1;
+  let v = params[cur.id];
+  if(v === undefined) v = cur.p.def < 0 ? otsu : cur.p.def;
+  r.value = v; $('paramOut').textContent = (+v).toFixed(r.step < 1 ? 1 : 0);
+}
+$('param').oninput = e => { params[cur.id] = +e.target.value; $('paramOut').textContent = (+e.target.value).toFixed(e.target.step < 1 ? 1 : 0); if(!live || frozen) render(); };
+const P = () => params[cur.id] ?? (cur.p.def < 0 ? otsu : cur.p.def);
+
+$('splitBtn').onclick = e => { split = !split; e.currentTarget.setAttribute('aria-pressed', split); render(); };
+$('freezeBtn').onclick = e => { frozen = !frozen; e.currentTarget.setAttribute('aria-pressed', frozen); e.currentTarget.textContent = frozen ? 'Reprendre' : 'Figer'; if(!frozen) loop(); };
+function note(t, err){ const n = $('note'); n.textContent = t; n.classList.toggle('err', !!err); }
+
+// ---------- sources ----------
+function setSize(w, h){
+  const s = Math.min(1, MAXW / w); w = Math.round(w*s); h = Math.round(h*s);
+  if(src.width !== w || src.height !== h){ src.width = view.width = w; src.height = view.height = h; gray = new Float32Array(w*h); }
+  $('osdR').textContent = w + '×' + h;
+}
+function drawTestChart(){
+  setSize(640, 480);
+  const c = sctx, W = 640, H = 480;
+  const g = c.createLinearGradient(0,0,W,0); g.addColorStop(0,'#000'); g.addColorStop(1,'#fff');
+  c.fillStyle = g; c.fillRect(0,0,W,90);
+  const bars = ['#c0c0c0','#c0c000','#00c0c0','#00c000','#c000c0','#c00000','#0000c0'];
+  bars.forEach((col,i) => { c.fillStyle = col; c.fillRect(i*W/7, 90, W/7+1, 130); });
+  c.fillStyle = '#2a2a2a'; c.fillRect(0,220,W,260);
+  // étoile de Siemens
+  const cx = 160, cy = 350, R = 110;
+  for(let i=0;i<36;i++){ c.beginPath(); c.moveTo(cx,cy); c.arc(cx,cy,R,i*Math.PI/18,(i+.5)*Math.PI/18); c.fillStyle = i%2 ? '#eee' : '#111'; c.fill(); }
+  // marches de gris
+  for(let i=0;i<11;i++){ const v = Math.round(i*25.5); c.fillStyle = `rgb(${v},${v},${v})`; c.fillRect(310+i*29, 250, 29, 60); }
+  // fréquences
+  for(let i=0;i<5;i++){ const p = 2+i*2; for(let x=0;x<58;x+=p){ c.fillStyle = '#ddd'; c.fillRect(310+i*64+x, 330, p/2, 60); } }
+  c.fillStyle = '#ddd'; c.font = '600 22px "IBM Plex Mono", monospace'; c.fillText('MIRE 640×480', 330, 440);
+  c.fillStyle = '#fff'; c.beginPath(); c.arc(590,440,22,0,7); c.fill();
+  $('srcLabel').textContent = 'Mire de test'; $('dot').className = 'dot';
+}
+function loadImage(file){
+  if(!file) return;
+  stopLive();
+  const url = URL.createObjectURL(file), img = new Image();
+  img.onload = () => { setSize(img.naturalWidth, img.naturalHeight); sctx.drawImage(img, 0, 0, src.width, src.height); URL.revokeObjectURL(url); $('srcLabel').textContent = 'Photo'; note('Photo chargée. Change de filtre ou ajuste le réglage.'); render(); };
+  img.onerror = () => note("Impossible de lire cette image. Essaie un JPEG ou un PNG.", true);
+  img.src = url;
+}
+$('shot').onchange = e => { loadImage(e.target.files[0]); e.target.value = ''; };
+$('pick').onchange = e => { loadImage(e.target.files[0]); e.target.value = ''; };
+
+async function startLive(){
+  try{
+    if(!navigator.mediaDevices?.getUserMedia) throw new Error('nomedia');
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}}, audio:false});
+    vid.srcObject = stream; await vid.play();
+    live = true; frozen = false;
+    $('liveBtn').setAttribute('aria-pressed', true); $('liveBtn').textContent = 'Arrêter';
+    $('freezeBtn').disabled = false; $('freezeBtn').textContent = 'Figer'; $('freezeBtn').setAttribute('aria-pressed', false);
+    $('dot').className = 'dot live'; $('srcLabel').textContent = 'Direct';
+    note('Caméra en direct. « Figer » garde l’image courante.');
+    loop();
+  }catch(err){
+    note("La caméra en direct est bloquée dans cette vue. Utilise « Photo » (ouvre l’appareil photo), ou ouvre la version fichier hébergée en HTTPS pour le direct.", true);
+  }
+}
+function stopLive(){
+  if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  live = false; frozen = false;
+  $('liveBtn').setAttribute('aria-pressed', false); $('liveBtn').textContent = 'Direct';
+  $('freezeBtn').disabled = true; $('freezeBtn').textContent = 'Figer';
+  $('dot').className = 'dot';
+}
+$('liveBtn').onclick = () => live ? (stopLive(), $('srcLabel').textContent = 'Image figée', note('Direct arrêté.')) : startLive();
+function loop(){
+  if(!live || frozen) return;
+  if(vid.videoWidth){ setSize(vid.videoWidth, vid.videoHeight); sctx.drawImage(vid, 0, 0, src.width, src.height); frame++; render(); }
+  requestAnimationFrame(loop);
+}
+
+// ---------- traitement ----------
+function turbo(t){
+  t = Math.min(1, Math.max(0, t));
+  const r = .13572138+t*(4.6153926+t*(-42.66032258+t*(132.13108234+t*(-152.94239396+t*59.28637943))));
+  const g = .09140261+t*(2.19418839+t*(4.84296658+t*(-14.18503333+t*(4.27729857+t*2.82956604))));
+  const b = .1066733+t*(12.64194608+t*(-60.58204836+t*(110.36276771+t*(-89.90310912+t*27.34824973))));
+  return [r*255, g*255, b*255];
+}
+const TURBO = Array.from({length:256}, (_, i) => turbo(i/255));
+
+function computeOtsu(total){
+  let sum = 0; for(let i=0;i<256;i++) sum += i*hbins[i];
+  let sumB = 0, wB = 0, best = 0, t = 128;
+  for(let i=0;i<256;i++){
+    wB += hbins[i]; if(!wB) continue; const wF = total - wB; if(!wF) break;
+    sumB += i*hbins[i]; const mB = sumB/wB, mF = (sum-sumB)/wF, v = wB*wF*(mB-mF)**2;
+    if(v > best){ best = v; t = i; }
+  }
+  return t;
+}
+
+function render(){
+  const W = src.width, H = src.height, N = W*H;
+  const inp = sctx.getImageData(0, 0, W, H), s = inp.data;
+  const out = vctx.createImageData(W, H), o = out.data;
+  hbins.fill(0);
+  let sum = 0, sum2 = 0;
+  for(let i=0,j=0;i<N;i++,j+=4){ const y = .299*s[j]+.587*s[j+1]+.114*s[j+2]; gray[i] = y; hbins[y|0]++; sum += y; sum2 += y*y; }
+  otsu = computeOtsu(N);
+  const mean = sum/N, sd = Math.sqrt(Math.max(0, sum2/N - mean*mean));
+  const id = cur.id, p = cur.p ? P() : 0;
+  const set = (j, r, g, b) => { o[j] = r; o[j+1] = g; o[j+2] = b; o[j+3] = 255; };
+
+  if(id === 'orig'){ o.set(s); }
+  else if(id === 'gray'){ for(let i=0,j=0;i<N;i++,j+=4){ const y = gray[i]; set(j,y,y,y); } }
+  else if(id === 'inv'){ for(let j=0;j<N*4;j+=4) set(j,255-s[j],255-s[j+1],255-s[j+2]); }
+  else if(id === 'eq'){
+    const lut = new Uint8Array(256); let acc = 0, cmin = 0;
+    for(let i=0;i<256;i++){ if(hbins[i]){ cmin = hbins[i]; break; } }
+    for(let i=0;i<256;i++){ acc += hbins[i]; lut[i] = Math.round(Math.max(0, (acc-cmin)/Math.max(1, N-cmin))*255); }
+    for(let i=0,j=0;i<N;i++,j+=4){ const y = lut[gray[i]|0]; set(j,y,y,y); }
+  }
+  else if(id === 'thr'){ for(let i=0,j=0;i<N;i++,j+=4){ const y = gray[i] >= p ? 255 : 0; set(j,y,y,y); } }
+  else if(id === 'false'){ for(let i=0,j=0;i<N;i++,j+=4){ const c = TURBO[gray[i]|0]; set(j,c[0],c[1],c[2]); } }
+  else if(id === 'zebra'){
+    const lim = p*2.55;
+    for(let i=0,j=0;i<N;i++,j+=4){
+      const x = i % W, y = (i / W) | 0;
+      if(gray[i] >= lim && ((x+y+frame*2) >> 3) & 1) set(j,20,20,20); else set(j,s[j],s[j+1],s[j+2]);
+    }
+  }
+  else {
+    // opérateurs de voisinage
+    for(let y=0;y<H;y++){
+      const ym = y ? y-1 : 0, yp = y < H-1 ? y+1 : y;
+      for(let x=0;x<W;x++){
+        const xm = x ? x-1 : 0, xp = x < W-1 ? x+1 : x;
+        const a=gray[ym*W+xm], b=gray[ym*W+x], c=gray[ym*W+xp], d=gray[y*W+xm], e=gray[y*W+x], f=gray[y*W+xp], g=gray[yp*W+xm], h=gray[yp*W+x], k=gray[yp*W+xp];
+        const i = y*W+x, j = i*4;
+        if(id === 'lap'){ const v = Math.min(255, Math.abs(b+d+f+h-4*e)*p); set(j,v,v,v); continue; }
+        const gx = (c+2*f+k)-(a+2*d+g), gy = (g+2*h+k)-(a+2*b+c), m = Math.sqrt(gx*gx+gy*gy);
+        if(id === 'sobel'){ const v = Math.min(255, m*p/4); set(j,v,v,v); }
+        else { // peaking
+          if(m > 1100 - p*4) set(j,242,163,58); else set(j,s[j]*.85,s[j+1]*.85,s[j+2]*.85);
+        }
+      }
+    }
+  }
+  if(split){ const half = W>>1; for(let y=0;y<H;y++){ for(let x=0;x<half;x++){ const j=(y*W+x)*4; o[j]=s[j]; o[j+1]=s[j+1]; o[j+2]=s[j+2]; o[j+3]=255; } const j=(y*W+half)*4; o[j]=242; o[j+1]=163; o[j+2]=58; } }
+  vctx.putImageData(out, 0, 0);
+  drawHist(mean, sd);
+}
+
+function drawHist(mean, sd){
+  const w = hist.width, h = hist.height; hctx.clearRect(0,0,w,h);
+  let max = 1; for(let i=0;i<256;i++) if(hbins[i] > max) max = hbins[i];
+  const lmax = Math.log1p(max);
+  hctx.strokeStyle = '#2c2f34'; hctx.lineWidth = 1;
+  [64,128,192].forEach(v => { hctx.beginPath(); hctx.moveTo(v*2+.5,0); hctx.lineTo(v*2+.5,h); hctx.stroke(); });
+  hctx.beginPath(); hctx.moveTo(0,h);
+  for(let i=0;i<256;i++) hctx.lineTo(i*2, h - Math.log1p(hbins[i])/lmax*(h-4));
+  hctx.lineTo(w,h); hctx.closePath();
+  hctx.fillStyle = 'rgba(231,228,220,.22)'; hctx.fill();
+  hctx.strokeStyle = '#e7e4dc'; hctx.stroke();
+  // repère : seuil courant si pertinent
+  let mark = null;
+  if(cur.id === 'thr') mark = P(); else if(cur.id === 'zebra') mark = P()*2.55;
+  if(mark !== null){ hctx.strokeStyle = '#f2a33a'; hctx.lineWidth = 2; hctx.beginPath(); hctx.moveTo(mark*2,0); hctx.lineTo(mark*2,h); hctx.stroke(); }
+  $('hStats').textContent = `μ ${mean.toFixed(0)} · σ ${sd.toFixed(0)} · écrêtés ${(100*(hbins[255]+hbins[254])/(src.width*src.height)).toFixed(1)} %`;
+  $('hOtsu').textContent = `Otsu ${otsu}`;
+}
+
+// ---------- enregistrement ----------
+(async () => {
+  try{
+    const dl = await window.claude?.use?.('downloads');
+    if(!dl) return;
+    const b = $('saveBtn'); b.hidden = false;
+    b.onclick = () => view.toBlob(async blob => {
+      try{ await dl.save({filename:`filtrecam-${cur.id}.png`, data:blob}); note('Image enregistrée.'); }
+      catch(e){ if(e?.code === 'declined') note('Enregistrement annulé.'); else if(e?.code === 'rate_limited') note('Une demande est déjà ouverte.'); else { b.hidden = true; note("L’enregistrement n’est pas disponible ici.", true); } }
+    }, 'image/png');
+  }catch(e){}
+})();
+
+drawTestChart(); syncParam(); render();
+</script>
+
+</body>
+</html>
